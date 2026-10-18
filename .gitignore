@@ -1,0 +1,25 @@
+# secrets
+.env
+*.key
+*.pem
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+# data / runtime state / models (regenerate locally)
+data/cache/
+state/*
+!state/.gitkeep
+logs/
+models/*
+!models/.gitkeep
+results/
+# editors / OS
+.DS_Store
+.idea/
+.vscode/

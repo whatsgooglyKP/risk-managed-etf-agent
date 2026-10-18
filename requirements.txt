@@ -1,0 +1,20 @@
+# Core (live trading + backtests)
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+statsmodels>=0.14
+scikit-learn>=1.4
+yfinance>=0.2.40
+matplotlib>=3.8
+pyyaml>=6.0
+python-dotenv>=1.0
+alpaca-py>=0.30
+# Optional: RL exposure scaler (CPU torch: pip install torch --index-url https://download.pytorch.org/whl/cpu)
+stable-baselines3>=2.3
+gymnasium>=0.29
+torch>=2.2
+# Optional: dashboard
+streamlit>=1.35
+plotly>=5.20
+# Dev
+pytest>=8.0

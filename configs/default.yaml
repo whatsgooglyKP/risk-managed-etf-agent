@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# trading-agent configuration. This is the ONE file you edit.
+# Secrets (API keys) never go here: they live in .env (see .env.example).
+# ---------------------------------------------------------------------------
+
+universe: [SPY, QQQ, TLT, GLD, IWM]   # liquid, unleveraged ETFs only
+benchmark: SPY
+
+data:
+  start: "2005-01-01"        # history used for training / backtests
+  cache_dir: data/cache      # local CSV cache (git-ignored)
+  max_staleness_days: 4      # live: refuse to trade on data older than this (calendar days)
+
+forecasting:
+  train_window: 504          # trailing trading days used to fit ETS / ARIMA (~2 years)
+  refit_every: 21            # backtest: refit ETS/ARIMA params every N days (cheap updates in between)
+  ml_retrain_every: 63       # backtest: retrain gradient boosting every N days (expanding window)
+  ml_min_train: 750          # minimum rows before the ML model is trusted
+  arima_orders: [[1, 0, 0], [0, 0, 1], [1, 0, 1]]   # chosen per refit by AIC
+  weights: {ets: 0.25, arima: 0.25, ml: 0.50}        # ensemble weights
+  ml_horizon: 5              # ML model target: forward 5-day return (smoother than 1-day)
+
+signal:
+  enter_prob: 0.55           # go long when ensemble P(up) >= this ...
+  exit_prob: 0.50            # ... and stay long until it drops below this (hysteresis)
+  min_agreement: 2           # at least N of 3 models must forecast a positive return
+  trend_filter: true         # also require price above its 200-day moving average
+
+risk:
+  initial_capital: 77.0
+  hard_floor: 60.0           # equity <= this -> liquidate everything and halt PERMANENTLY
+  kill_file: state/HALT      # presence of this file = halted; delete manually only after review
+  target_vol: 0.10           # annualised volatility budget per position (vol-based sizing)
+  max_position: 0.35         # max fraction of equity in any one symbol
+  max_gross_exposure: 1.0    # cash account: never more than 100% invested
+  cash_buffer: 0.02          # keep 2% in cash for slippage / rounding
+  max_drawdown_soft: 0.08    # drawdown from peak beyond this -> halve exposure
+  max_drawdown_hard: 0.12    # beyond this -> go flat for cooldown_days, then resume at half size
+  cooldown_days: 10
+  daily_loss_cap: 0.03       # if equity fell >= 3% since last close -> no new buying today
+  pdt_equity_threshold: 25000
+  pdt_max_day_trades: 3      # max day trades per rolling 5 business days (if under threshold)
+  min_trade_notional: 1.00   # Alpaca fractional minimum is $1
+  rebalance_band: 0.05       # skip trades that change a weight by less than 5% of equity
+  allowed_symbols_only: true # reject any order for a symbol not in `universe`
+
+costs:                       # backtest friction (Alpaca stock commissions are $0)
+  slippage_bps: 5
+  spread_bps: 2
+  commission_per_order: 0.0
+
+rl:
+  enabled: false             # toggle the PPO exposure-scaler on/off for live trading
+  model_path: models/ppo_exposure.zip
+  timesteps: 60000
+  min_scale: 0.0             # RL may only scale risk-approved exposure within [min, max]
+  max_scale: 1.0             # (never above 1.0: the risk engine's sizing is the ceiling)
+  train_end: "2016-12-31"    # RL trains on OOS signals up to here, evaluated after
+
+backtest:
+  start: "2008-01-01"        # first out-of-sample trading day (models only see the past)
+  end: null                  # null = latest available
+  results_dir: results
+
+execution:
+  mode: paper                # paper | live   (live ALSO requires the --live flag)
+  state_dir: state
+  order_timeout_sec: 90      # wait this long for each order to fill before cancelling
+  max_retries: 4             # API retries with exponential backoff
+  min_minutes_after_open: 10 # wait for the opening auction to settle before trading
+  log_dir: logs

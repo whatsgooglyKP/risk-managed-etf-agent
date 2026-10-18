@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-agent"
+version = "0.1.0"
+description = "Risk-managed, forecast-driven ETF trading agent (ETS + ARIMA + gradient boosting, optional PPO sizing) with Alpaca paper/live execution."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Kevin Pinard", email = "KP@kevinpinard.studio" }]
+keywords = ["algorithmic-trading", "time-series", "arima", "reinforcement-learning", "risk-management", "alpaca"]
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "scipy>=1.11",
+  "statsmodels>=0.14",
+  "scikit-learn>=1.4",
+  "yfinance>=0.2.40",
+  "matplotlib>=3.8",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  "alpaca-py>=0.30",
+]
+
+[project.optional-dependencies]
+rl = ["stable-baselines3>=2.3", "gymnasium>=0.29", "torch>=2.2"]
+dashboard = ["streamlit>=1.35", "plotly>=5.20"]
+dev = ["pytest>=8.0"]
+all = ["trading-agent[rl,dashboard,dev]"]
+
+[project.scripts]
+trading-agent = "trading_agent.cli:main"
+
+[project.urls]
+Portfolio = "https://kevinpinard.studio/home"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
