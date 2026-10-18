@@ -9,7 +9,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
-COLORS = {"Agent (no RL)": "#1f77b4", "Agent + RL": "#2ca02c", "Buy & hold SPY": "#7f7f7f"}
+COLORS = {"Agent (no RL)": "#1f77b4", "Agent + RL": "#2ca02c", "Buy & hold SPY": "#7f7f7f",
+          "5-ETF (v1)": "#1f77b4", "Wide-50, top 5 (v2)": "#ff7f0e"}
 
 
 def plot_equity(curves: dict[str, pd.Series], path: Path, title: str, floor: float | None = None):

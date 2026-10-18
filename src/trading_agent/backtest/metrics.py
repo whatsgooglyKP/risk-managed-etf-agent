@@ -62,7 +62,10 @@ def format_table(rows: dict[str, dict]) -> str:
             ("ann_vol", "Volatility (ann.)", "{:.1%}"), ("sharpe", "Sharpe", "{:.2f}"),
             ("sortino", "Sortino", "{:.2f}"), ("max_drawdown", "Max drawdown", "{:.1%}"),
             ("win_rate", "Win rate (closed trades)", "{:.1%}"), ("exposure", "Avg. exposure", "{:.0%}"),
-            ("n_trades", "# orders", "{:d}"), ("floor_triggers", "Floor triggers", "{:d}"),
+            ("n_trades", "# orders", "{:d}"), ("avg_positions", "Avg. # holdings", "{:.1f}"),
+            ("turnover", "Turnover (x equity / yr)", "{:.1f}"),
+            ("costs_paid", "Trading costs paid ($)", "{:.2f}"),
+            ("floor_triggers", "Floor triggers", "{:d}"),
             ("min_equity", "Lowest equity ($; floor is $60)", "{:.2f}"),
             ("end_equity", "Ending equity ($)", "{:.2f}")]
     names = list(rows)
@@ -75,5 +78,7 @@ def format_table(rows: dict[str, dict]) -> str:
                 cells.append("n/a" if v is None or (isinstance(v, float) and np.isnan(v)) else fmt.format(v))
             except (ValueError, TypeError):
                 cells.append(str(v))
+        if all(c == "n/a" for c in cells) and k in ("avg_positions", "turnover", "costs_paid"):
+            continue
         out.append(f"| {label} | " + " | ".join(cells) + " |")
     return "\n".join(out)
