@@ -3,7 +3,9 @@
 Action  : Discrete(5) -> scale in {0, .25, .5, .75, 1.0} (mapped into [min_scale, max_scale]).
           The scale multiplies the RiskEngine's already-capped targets, so RL can only
           REDUCE risk; it cannot choose symbols, add leverage, or bypass any risk rule.
-Reward  : 100 * daily log return - dd_penalty * 100 * (increase in drawdown).
+Reward  : 100 * (r - 0.5 * risk_aversion * r**2) - dd_penalty * 100 * (new drawdown beyond 5%),
+          a mean-variance utility: full exposure pays in calm markets, while high-volatility
+          regimes make the variance term dominate, so the policy learns when to de-risk.
 Obs     : portfolio drawdown / momentum / volatility, SPY regime, forecast summary, exposure.
 """
 from __future__ import annotations
@@ -58,12 +60,14 @@ def bt_obs(bt) -> np.ndarray:
 class ExposureEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, backtester, episode_len: int = 252, dd_penalty: float = 2.0,
+    def __init__(self, backtester, episode_len: int = 252, risk_aversion: float = 10.0,
+                 dd_penalty: float = 0.5,
                  min_scale: float = 0.0, max_scale: float = 1.0, seed: int | None = None):
         super().__init__()
         self.bt = backtester
         self.episode_len = episode_len
         self.dd_penalty = dd_penalty
+        self.risk_aversion = risk_aversion
         self.min_scale, self.max_scale = min_scale, max_scale
         self.action_space = spaces.Discrete(len(SCALES))
         self.observation_space = spaces.Box(-10, 10, shape=(OBS_DIM,), dtype=np.float32)
@@ -92,7 +96,9 @@ class ExposureEnv(gym.Env):
             return bt_obs_safe(self.bt), 0.0, False, True, {}
         eq1 = self.bt.open_and_close()
         dd1 = self._dd()
-        reward = 100 * np.log(max(eq1, 1e-9) / eq0) - self.dd_penalty * 100 * max(0.0, dd1 - dd0)
+        r = np.log(max(eq1, 1e-9) / eq0)
+        deep = max(0.0, dd1 - max(dd0, 0.05))          # only penalise drawdown beyond 5%
+        reward = 100 * (r - 0.5 * self.risk_aversion * r * r) - self.dd_penalty * 100 * deep
         terminated = bool(self.bt.risk.state.halted)
         return bt_obs(self.bt), float(reward), terminated, bool(truncated), {"scale": scale}
 
