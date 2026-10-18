@@ -31,7 +31,25 @@ class PriceData:
 
 
 def _cache_path(cache_dir: Path, symbols: list[str], start: str) -> Path:
-    return cache_dir / f"prices_{'-'.join(sorted(symbols))}_{start}.csv"
+    name = "-".join(sorted(symbols))
+    if len(name) > 80:      # wide universes: keep file names short (filesystem limit is 255 bytes)
+        import hashlib
+
+        name = f"{len(symbols)}sym-{hashlib.sha1(name.encode()).hexdigest()[:10]}"
+    return cache_dir / f"prices_{name}_{start}.csv"
+
+
+def _align(opens: pd.DataFrame, closes: pd.DataFrame) -> PriceData:
+    """Keep every session where at least one symbol traded.
+
+    Symbols that listed later (e.g. SLV in 2006) stay NaN before their first bar, so nothing
+    is back-filled from the future. After a symbol's first bar, isolated missing values are
+    forward-filled (last known price), and a missing open falls back to that day's close.
+    """
+    valid = closes.dropna(how="all").index
+    closes = closes.loc[valid].ffill()
+    opens = opens.loc[valid].fillna(closes)
+    return PriceData(opens, closes)
 
 
 def _download_yf(symbols: list[str], start: str) -> pd.DataFrame:
@@ -41,6 +59,21 @@ def _download_yf(symbols: list[str], start: str) -> pd.DataFrame:
     if df is None or df.empty:
         raise RuntimeError("yfinance returned no data")
     out = pd.concat({"open": df["Open"], "close": df["Close"]}, axis=1)
+    # yfinance sometimes drops a few symbols of a large request (rate limits): retry those once
+    missing = [s for s in symbols if s not in out["close"].columns or out["close"][s].isna().all()]
+    if missing and len(missing) < len(symbols):
+        import time
+
+        time.sleep(3)
+        log.warning("yfinance returned nothing for %s; retrying them", missing)
+        retry = yf.download(missing, start=start, auto_adjust=True, progress=False, threads=False)
+        if retry is not None and not retry.empty:
+            if not isinstance(retry.columns, pd.MultiIndex):     # single symbol -> flat columns
+                retry.columns = pd.MultiIndex.from_product([retry.columns, missing])
+            for s in missing:
+                if s in retry["Close"].columns:
+                    out[("open", s)] = retry["Open"][s]
+                    out[("close", s)] = retry["Close"][s]
     return out
 
 
@@ -65,6 +98,9 @@ def load_prices(symbols: list[str], start: str, cache_dir: str | Path | None = N
             raw.to_csv(path)
     raw = raw.sort_index()
     raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
+    missing = [s for s in symbols if s not in raw["close"].columns or raw["close"][s].isna().all()]
+    if missing:
+        raise RuntimeError(f"No price data for {missing}")
     opens = raw["open"][symbols].astype(float)
     closes = raw["close"][symbols].astype(float)
     # Drop today's partial bar if the download happened before the close settled
@@ -73,8 +109,7 @@ def load_prices(symbols: list[str], start: str, cache_dir: str | Path | None = N
     today = pd.Timestamp(now_ny.date())
     if closes.index[-1] >= today and now_ny.hour < 17:
         opens, closes = opens.iloc[:-1], closes.iloc[:-1]
-    valid = closes.dropna(how="any").index
-    return PriceData(opens.loc[valid].ffill(), closes.loc[valid])
+    return _align(opens, closes)
 
 
 def check_freshness(prices: PriceData, max_staleness_days: int, today: date | None = None) -> None:
@@ -98,10 +133,9 @@ def load_prices_alpaca(symbols: list[str], start: str, api_key: str, secret_key:
                            feed=DataFeed.IEX)
     df = client.get_stock_bars(req).df.reset_index()
     df["date"] = pd.to_datetime(df["timestamp"]).dt.tz_convert(NY).dt.tz_localize(None).dt.normalize()
-    opens = df.pivot(index="date", columns="symbol", values="open")[symbols]
-    closes = df.pivot(index="date", columns="symbol", values="close")[symbols]
+    opens = df.pivot(index="date", columns="symbol", values="open").reindex(columns=symbols)
+    closes = df.pivot(index="date", columns="symbol", values="close").reindex(columns=symbols)
     now_ny = datetime.now(NY)
     if closes.index[-1] >= pd.Timestamp(now_ny.date()) and now_ny.hour < 17:
         opens, closes = opens.iloc[:-1], closes.iloc[:-1]
-    valid = closes.dropna(how="any").index
-    return PriceData(opens.loc[valid].ffill(), closes.loc[valid])
+    return _align(opens, closes)

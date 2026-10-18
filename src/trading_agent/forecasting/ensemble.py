@@ -10,8 +10,11 @@ Output (one row per date x symbol), all known at that date's close:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -22,13 +25,64 @@ from .models import arima_walk_forward, ets_walk_forward, prob_up
 log = logging.getLogger("trading_agent.forecasting")
 
 
+STAT_COLS = ["mu_ets", "sd_ets", "mu_arima", "sd_arima"]
+
+
+def eligible_dates(close: pd.Series, dates: pd.DatetimeIndex, min_history: int) -> pd.DatetimeIndex:
+    """Dates (within `dates`) on which `close` has at least `min_history` bars up to and incl. d."""
+    s = close.dropna()
+    if len(s) < min_history:
+        return pd.DatetimeIndex([])
+    first_ok = s.index[min_history - 1]
+    return dates[(dates >= first_ok) & dates.isin(s.index)]
+
+
+def _stat_key(sym: str, close: pd.Series, dates: pd.DatetimeIndex, window: int, refit: int,
+              orders) -> str:
+    """Cache key: the model settings, the forecast dates and the exact price history used."""
+    s = close.dropna().loc[: dates[-1]]
+    h = hashlib.sha1()
+    h.update(repr((sym, window, refit, [tuple(o) for o in orders], str(dates[0]), str(dates[-1]),
+                   len(dates))).encode())
+    h.update(pd.util.hash_pandas_object(s.round(6), index=True).values.tobytes())
+    return h.hexdigest()[:16]
+
+
+def _single_thread_worker():
+    """One BLAS thread per worker process: N processes x M BLAS threads oversubscribes the CPU."""
+    try:
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(1)
+    except Exception:  # noqa: BLE001 - optional optimisation
+        pass
+
+
 def _stat_job(args):
-    sym, close, dates, window, refit_every, orders = args
-    ets = ets_walk_forward(close, dates, window, refit_every)
-    ari = arima_walk_forward(close, dates, window, refit_every, orders)
+    sym, close, dates, window, refit_every, orders, cache_dir = args
+    if len(dates) == 0:
+        return pd.DataFrame(columns=STAT_COLS, index=pd.MultiIndex.from_arrays(
+            [pd.DatetimeIndex([]), []], names=["date", "symbol"]))
+    path = None
+    if cache_dir is not None:
+        path = Path(cache_dir) / f"{sym}_{_stat_key(sym, close, dates, window, refit_every, orders)}.pkl"
+        if path.exists():
+            try:
+                return pd.read_pickle(path)
+            except Exception:  # noqa: BLE001 - corrupt cache file: recompute
+                pass
+    series = close.dropna()
+    ets = ets_walk_forward(series, dates, window, refit_every)
+    ari = arima_walk_forward(series, dates, window, refit_every, orders)
     df = ets.join(ari)
     df["symbol"] = sym
-    return df.reset_index().set_index(["date", "symbol"])
+    df = df.reset_index().set_index(["date", "symbol"])
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        df.to_pickle(tmp)
+        tmp.replace(path)
+    return df
 
 
 def _make_models(seed: int = 0):
@@ -94,15 +148,28 @@ def combine(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
 
 
 def walk_forward_forecasts(close: pd.DataFrame, start: str, fcfg, benchmark: str,
-                           end: str | None = None, n_jobs: int = 5) -> pd.DataFrame:
-    """Out-of-sample forecasts for every trading day in [start, end]."""
+                           end: str | None = None, n_jobs: int | None = None,
+                           cache_dir: str | Path | None = None) -> pd.DataFrame:
+    """Out-of-sample forecasts for every trading day in [start, end].
+
+    Symbols with a shorter history (listed later) get forecasts only once they have
+    `min_history` bars. ETS/ARIMA run one process per symbol and, if `cache_dir` is given,
+    each symbol's walk-forward result is cached on disk keyed by its exact price history,
+    so the same symbol is never recomputed across configs or reruns.
+    """
     dates = close.loc[start:end].index
     window, refit = int(fcfg["train_window"]), int(fcfg["refit_every"])
+    min_hist = int(fcfg.get("min_history", 252))
     orders = [tuple(o) for o in fcfg["arima_orders"]]
-    jobs = [(s, close[s], dates, window, refit, orders) for s in close.columns]
-    log.info("Walk-forward ETS/ARIMA for %d symbols x %d days", len(jobs), len(dates))
-    if n_jobs > 1:
-        with ProcessPoolExecutor(max_workers=min(n_jobs, len(jobs))) as ex:
+    if n_jobs is None:
+        n_jobs = int(fcfg.get("n_jobs", 1) or 1)
+    n_jobs = max(1, min(n_jobs, os.cpu_count() or 1))
+    jobs = [(s, close[s], eligible_dates(close[s], dates, min_hist), window, refit, orders, cache_dir)
+            for s in close.columns]
+    log.info("Walk-forward ETS/ARIMA for %d symbols x %d days (%d workers)", len(jobs), len(dates), n_jobs)
+    if n_jobs > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(max_workers=min(n_jobs, len(jobs)),
+                                 initializer=_single_thread_worker) as ex:
             stat = pd.concat(list(ex.map(_stat_job, jobs)))
     else:
         stat = pd.concat([_stat_job(j) for j in jobs])
@@ -119,5 +186,5 @@ def latest_forecasts(close: pd.DataFrame, fcfg, benchmark: str) -> pd.DataFrame:
     last = close.index[-1]
     fcfg = dict(fcfg)
     fcfg["ml_retrain_every"] = 1
-    df = walk_forward_forecasts(close, str(last.date()), fcfg, benchmark, n_jobs=1)
+    df = walk_forward_forecasts(close, str(last.date()), fcfg, benchmark)
     return df.xs(last, level="date")

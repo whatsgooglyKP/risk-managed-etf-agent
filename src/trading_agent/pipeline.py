@@ -20,7 +20,7 @@ def get_prices(cfg, refresh: bool = False):
 
 
 def _fc_key(cfg) -> str:
-    f = {k: v for k, v in cfg["forecasting"].items() if k != "weights"}
+    f = {k: v for k, v in cfg["forecasting"].items() if k not in ("weights", "n_jobs", "cache_dir")}
     blob = json.dumps([cfg["universe"], cfg["data"]["start"], cfg["backtest"]["start"], f], sort_keys=True)
     return hashlib.sha1(blob.encode()).hexdigest()[:10]
 
@@ -36,6 +36,7 @@ def get_forecasts(cfg, prices, refresh: bool = False) -> pd.DataFrame:
         if fc.index.get_level_values("date").max() >= last:
             return combine(fc, cfg["forecasting"]["weights"])
     fc = walk_forward_forecasts(prices.close, cfg["backtest"]["start"], cfg["forecasting"],
-                                cfg["benchmark"], cfg["backtest"]["end"])
+                                cfg["benchmark"], cfg["backtest"]["end"],
+                                cache_dir=resolve(cfg["forecasting"].get("cache_dir", "results/fc_cache")))
     fc.to_pickle(path)
     return fc
