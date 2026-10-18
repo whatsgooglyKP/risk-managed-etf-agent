@@ -65,6 +65,37 @@ That's reported as-is.
 |---|---|
 | ![rl](docs/images/equity_rl_test.png) | ![exposure](docs/images/exposure_rl_test.png) |
 
+### Experiment: does a wider universe help? (No, so the 5 ETFs stay the default)
+
+I also built a **wide-universe version (v2)**: 26 long-lived ETFs plus 24 stocks that were
+the largest US companies at the end of 2007, chosen point-in-time to limit survivorship bias.
+Each day it ranks them by forecast strength and holds only the best 5, with volatility
+sizing, a 40% sector cap, a correlation filter, a 10% portfolio-volatility cap and fractional
+shares. It ran on the same engine, costs and periods:
+
+| Same periods, $77 start, costs included | 5-ETF v1 (default) | Wide-50 v2 | Buy & hold SPY |
+|---|---|---|---|
+| **2008–2026** CAGR / Sharpe | **6.26% / 0.71** | −1.40% / −0.42 | 11.25% / 0.64 |
+| 2008–2026 max drawdown | **−13.6%** | −23.2% (**$60 floor hit, Mar 2011**) | −51.9% |
+| 2008–2016 CAGR / Sharpe | 6.69% / 0.78 | −2.90% / −0.61 | 7.17% / 0.43 |
+| 2017–2026 CAGR / Sharpe | 5.82% / 0.65 | 0.48% / 0.10 | 15.06% / 0.87 |
+| 2017–2026 max drawdown | −13.6% | −30.7% | −33.7% |
+| Turnover 2017–2026 (× equity/yr) | 18 | 88 | n/a |
+
+The wider universe **made things worse**. Ranking 50 near-coin-flip forecasts mostly picks
+noise, the daily reshuffling caused heavy churn, and the ensemble is much better at timing
+broad ETFs than at picking single stocks. I tried 8 variants (top 3 or 8, no correlation
+filter, no volatility cap, holding until each name's own exit signal, ranking by
+return/volatility, ETFs only), and every one of them was reported. The best, ETFs only,
+reached 2.0% CAGR with a 0.29 Sharpe, still well behind v1. Full tables are in
+[`docs/comparison.md`](docs/comparison.md) and the analysis is in
+[`docs/METHODOLOGY.md`](docs/METHODOLOGY.md). The v2 config is kept in `configs/wide.yaml`
+for anyone who wants to experiment.
+
+| v1 vs v2 vs SPY, 2008–2026 | Drawdowns |
+|---|---|
+| ![compare](docs/images/compare_equity.png) | ![compare dd](docs/images/compare_drawdown.png) |
+
 A self-contained HTML version (all charts, metrics and the last orders) is in
 [`docs/report.html`](docs/report.html); full tables are in [`docs/results.md`](docs/results.md).
 
@@ -105,6 +136,8 @@ flowchart LR
     GUARD --> SIM["SimBroker<br/>backtests"]
     GUARD --> ALP["Alpaca<br/>paper default / live"]
     ALP --> LEDGER[("SQLite ledger + CSV")]
+    IEX["Alpaca IEX live prices"] --> MON["Intraday monitor<br/>every 15-20 min / loop"]
+    MON -->|"floor / drawdown / daily loss"| GUARD
     LEDGER --> DASH["Streamlit dashboard<br/>+ static HTML report"]
 ```
 
@@ -120,6 +153,7 @@ The backtester and the live runner share the same forecasting, signal, risk and
 | **Signal** | Long when `p_up ≥ 0.55`, ≥ 2 of 3 models agree and price > its 200-day average; stay long while `p_up ≥ 0.50` (hysteresis cuts churn). Otherwise **cash**. |
 | **Risk** | weight = min(35%, 10% target vol ÷ EWMA vol); gross ≤ 98%; drawdown ≥ 8% → half size, ≥ 12% → flat for 10 days; −3% day → no new buys; **equity ≤ $60 → sell everything, write `state/HALT`, never trade again** until a human deletes it. |
 | **Execute** | Decide at the close, trade at the next session (~09:50 ET) with fractional, dollar-amount market orders. Sells first, then buys funded by cash. |
+| **Monitor** | During market hours, `trading-agent monitor` re-marks holdings with Alpaca's free real-time IEX prices and uses the lower of that and the broker's equity. **≤ $60 → cancel orders, sell everything, permanent halt** (the one case allowed to break the day-trade limit). Drawdown ≥ 12% → cooldown and sell anything not bought today. Down ≥ 3% on the day → no more buying today. |
 
 ---
 
@@ -128,6 +162,7 @@ The backtester and the live runner share the same forecasting, signal, risk and
 ```
 .
 ├── configs/default.yaml          # the ONE file you edit (universe, thresholds, risk limits)
+├── configs/wide.yaml             # experimental 50-symbol ranked universe (see results)
 ├── .env.example                  # copy to .env, add Alpaca keys (never committed)
 ├── src/trading_agent/
 │   ├── data/loader.py            # yfinance + cache, Alpaca IEX fallback, freshness checks
@@ -135,14 +170,15 @@ The backtester and the live runner share the same forecasting, signal, risk and
 │   ├── strategy.py               # long/flat signals, EWMA vol, trend filter
 │   ├── risk/engine.py            # RiskEngine: sizing, floor, PDT, drawdown, per-order gate
 │   ├── rl/                       # gymnasium env, PPO training, RL policy (exposure only)
-│   ├── execution/                # GuardedBroker, SimBroker, AlpacaBroker, ledger, live runner
-│   ├── backtest/                 # event-driven backtester, metrics, charts, HTML report
+│   ├── execution/                # GuardedBroker, SimBroker, AlpacaBroker, ledger, live runner,
+│   │                             #   monitor.py (intraday risk monitor), lock.py
+│   ├── backtest/                 # event-driven backtester, metrics, charts, HTML report, compare.py
 │   ├── dashboard/app.py          # Streamlit app
 │   └── cli.py                    # `trading-agent` command
-├── tests/                        # pytest: risk engine, PDT, sizing, leakage, broker, e2e daily run
-├── scripts/                      # setup.sh, run_daily.sh (cron), guard.sh (intraday floor check)
-├── docs/                         # results.md, report.html, images/
-└── .github/workflows/            # ci.yml (tests), daily-trade.yml (free scheduled trading)
+├── tests/                        # pytest: risk, PDT, sizing, leakage, selection, monitor, e2e daily run
+├── scripts/                      # setup.sh, run_daily.sh (cron), monitor.sh (intraday risk monitor)
+├── docs/                         # METHODOLOGY.md, comparison.md, results.md, report.html, images/
+└── .github/workflows/            # ci.yml (tests), daily-trade.yml, intraday-monitor.yml (free schedules)
 ```
 
 ---
@@ -155,7 +191,7 @@ The backtester and the live runner share the same forecasting, signal, risk and
 git clone <your-repo-url> trading-agent && cd trading-agent
 ./scripts/setup.sh                 # creates .venv, installs everything, copies .env.example -> .env
 source .venv/bin/activate
-pytest                             # 57 tests, should all pass (~30 s)
+pytest                             # 87 tests, should all pass (~30 s)
 trading-agent preview              # no keys needed: today's signals for a fresh $77 account
 ```
 
@@ -181,7 +217,9 @@ trading-agent dashboard            # opens http://localhost:8501
 ```
 
 Other commands: `trading-agent backtest` (reproduce the results, about 12 min the first time,
-then cached), `trading-agent train-rl`, `trading-agent status`, `trading-agent guard`.
+then cached), `trading-agent compare --sensitivity` (v1 vs v2 vs SPY, about 15 min cold),
+`trading-agent monitor [--loop] [--dry-run]` (intraday risk check), `trading-agent train-rl`,
+`trading-agent status`. To try the wide universe: `trading-agent --config configs/wide.yaml preview`.
 
 ---
 
@@ -197,11 +235,12 @@ or a blocked account mean no new orders, a logged error and a non-zero exit code
 crontab -e
 # Daily run at 09:50 ET, Mon-Fri (set your computer's timezone to ET, or adjust the hour):
 50 9 * * 1-5  /path/to/trading-agent/scripts/run_daily.sh >> /path/to/trading-agent/logs/cron.log 2>&1
-# Optional safety net: hard-floor check every 30 min during market hours:
-*/30 10-15 * * 1-5  /path/to/trading-agent/scripts/guard.sh >> /path/to/trading-agent/logs/cron.log 2>&1
+# Intraday risk monitor every 15 min during market hours (floor, drawdown, daily loss):
+*/15 9-15 * * 1-5  /path/to/trading-agent/scripts/monitor.sh >> /path/to/trading-agent/logs/cron.log 2>&1
 ```
 
-The laptop must be awake at that time. On macOS: *System Settings → Battery → Options → Prevent
+Or keep the monitor running for the whole session: `./scripts/monitor.sh --loop` (checks every
+60 s and exits after the close). The laptop must be awake at that time. On macOS: *System Settings → Battery → Options → Prevent
 automatic sleeping*, or `sudo pmset repeat wakeorpoweron MTWRF 09:45:00`.
 
 ### Option B: GitHub Actions (no computer needed)
@@ -213,7 +252,10 @@ servers. A private repo includes 2,000 free minutes a month, and this uses about
 2. *Settings → Secrets and variables → Actions → New repository secret*: add
    `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` (paper keys first).
 3. *Actions → Daily trade → Run workflow* (leave **dry_run** checked) to test it.
-4. That's it: the schedule runs automatically. Logs and the ledger CSVs are attached to each
+4. `.github/workflows/intraday-monitor.yml` runs the risk monitor every 20 minutes during
+   market hours (about 570 of the 2,000 free minutes; free without limit on public repos).
+   Test it with *Actions → Intraday risk monitor → Run workflow* (dry_run checked).
+5. That's it: the schedules run automatically. Logs and the ledger CSVs are attached to each
    run as artifacts; `state/` is carried between runs with the Actions cache.
 
 Even if the cached state were ever lost, the important protections don't depend on it: the
@@ -230,14 +272,14 @@ Do these in order. Don't skip the paper period.
 - [ ] **2–4 weeks of paper trading** with the scheduler running; check the dashboard and the
       ledger (`state/orders.csv`) every few days. Every run should end `completed` or `dry_run`.
 - [ ] You understand that the agent can lose money, and that the $60 floor is checked when
-      the agent runs (daily, plus optional 30-minute guard checks), **not continuously**: an
-      overnight gap can push equity below $60 before it sells.
+      the agent runs (daily, plus intraday monitor checks every 15–20 minutes), **not
+      continuously**: an overnight gap can push equity below $60 before it sells.
 - [ ] Open and fund a **live** Alpaca account (a cash or margin account is fine; the agent never
       uses margin). Generate **live** API keys (a different key pair from paper).
 - [ ] Put the live keys in `.env` (laptop) or in the GitHub secrets (Actions).
 - [ ] In `configs/default.yaml` set `execution.mode: live`. Keep `risk.initial_capital: 77`
       and `risk.hard_floor: 60` unless you deliberately change your risk.
-- [ ] Laptop: add `--live` to the cron line (`run_daily.sh --live`, `guard.sh --live`).
+- [ ] Laptop: add `--live` to the cron lines (`run_daily.sh --live`, `monitor.sh --live`).
       Actions: add a repository **variable** `TRADING_LIVE` = `true`.
 - [ ] Run `trading-agent check --live` (read-only) and confirm it says **LIVE** with your real balance.
 - [ ] First live day: run `trading-agent daily --live --dry-run` during market hours, read the
@@ -253,6 +295,9 @@ Do these in order. Don't skip the paper period.
 ---
 
 ## Backtest methodology
+
+Full details, including the survivorship-bias discussion and the decision rule used for v1
+vs v2, are in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).
 
 - **Data:** yfinance daily adjusted prices 2005–present for SPY, QQQ, TLT, GLD and IWM. Trading starts in 2008 so
   the first models have about 3 years of history.
@@ -283,7 +328,9 @@ Do these in order. Don't skip the paper period.
 - **Small-account frictions.** With $77, the $1 minimum and cent rounding matter, and a few
   basis points of slippage are a bigger share of each trade.
 - **The floor is checked at run times, not tick by tick.** A gap down can take equity below $60
-  before liquidation. The intraday `guard` command reduces but doesn't remove this risk.
+  before liquidation. The intraday monitor reduces but doesn't remove this risk (and GitHub
+  may delay scheduled runs). It isn't simulated in the daily-bar backtest.
+- **More symbols didn't help.** The 50-symbol ranked version lost money in the backtest (see above).
 - **RL is a small add-on.** With a few thousand daily observations it can overfit; it's
   shown as an experiment next to the plain agent, and it's **off by default** (`rl.enabled: false`).
 - **yfinance is unofficial.** If it breaks, the agent falls back to Alpaca's free IEX data;

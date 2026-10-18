@@ -7,6 +7,9 @@
 # by market cap at the END OF 2007 (the backtest start), including later disappointments
 # (C, AIG, GE, INTC, BAC, PFE, T). Companies from that list that were later delisted or
 # acquired cannot be downloaded for free and are missing, so some bias remains.
+#
+# RESULT (docs/comparison.md): this design LOST money in the 2008-2026 walk-forward backtest
+# and hit the $60 floor in March 2011. It is kept as an experiment, not as the default.
 # ---------------------------------------------------------------------------
 
 name: "Wide-50, top 5 (v2)"
