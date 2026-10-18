@@ -91,7 +91,21 @@ class AlpacaBroker:
 
     # ------------------------------------------------------------------ orders
     def client_order_id(self, order: Order) -> str:
-        return f"ta-{self.session.isoformat()}-{order.symbol}-{order.side}"
+        cid = f"ta-{self.session.isoformat()}-{order.symbol}-{order.side}"
+        return f"{cid}-{order.tag}" if order.tag else cid
+
+    def position_quantities(self) -> dict[str, float]:
+        """symbol -> share quantity (fractional), long positions only."""
+        positions = self._call(self.client.get_all_positions)
+        return {p.symbol: float(p.qty) for p in positions if float(p.qty) > 0}
+
+    def cancel_open_orders(self) -> int:
+        """Cancel every working order (used before an emergency liquidation)."""
+        res = self._call(self.client.cancel_orders)
+        n = len(res or [])
+        if n:
+            log.warning("Cancelled %d open order(s)", n)
+        return n
 
     def submit(self, order: Order) -> dict:
         from alpaca.common.exceptions import APIError

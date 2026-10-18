@@ -3,8 +3,9 @@
 #
 # Setup: repo Settings -> Secrets and variables -> Actions -> New repository secret:
 #   ALPACA_API_KEY, ALPACA_SECRET_KEY   (paper keys first!)
-# Optional repository VARIABLE (not secret): TRADING_LIVE = "true" to trade real money
-#   (configs/default.yaml must ALSO say execution.mode: live).
+# Optional repository VARIABLES (not secrets):
+#   TRADING_LIVE   = "true" to trade real money (the config must ALSO say execution.mode: live)
+#   TRADING_CONFIG = e.g. "configs/wide.yaml" to use another config (default: configs/default.yaml)
 #
 # Two cron entries cover US daylight-saving changes (GitHub cron is UTC): the script itself
 # checks the market clock and is idempotent, so the extra run simply exits "already done".
@@ -21,8 +22,9 @@ on:
         type: boolean
         default: true
 
+# Shared with intraday-monitor.yml so the two never edit state/ at the same time.
 concurrency:
-  group: daily-trade
+  group: trading-state
   cancel-in-progress: false
 
 jobs:
@@ -51,9 +53,11 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: |
           ARGS=""
+          CONF=""
+          if [ -n "${{ vars.TRADING_CONFIG }}" ]; then CONF="--config ${{ vars.TRADING_CONFIG }}"; fi
           if [ "${{ vars.TRADING_LIVE }}" = "true" ]; then ARGS="$ARGS --live"; fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
-          trading-agent daily $ARGS
+          trading-agent $CONF daily $ARGS
 
       - name: Save state
         if: always()

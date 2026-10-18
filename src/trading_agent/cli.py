@@ -25,8 +25,16 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--dry-run", action="store_true", help="connect and plan, but place no orders")
     d.add_argument("--force", action="store_true", help="ignore clock/idempotency checks (testing)")
 
-    g = sub.add_parser("guard", help="intraday hard-floor check only (safe to run every 15-30 min)")
+    m = sub.add_parser("monitor", help="intraday risk monitor: live prices vs floor / daily loss / drawdown")
+    m.add_argument("--live", action="store_true")
+    m.add_argument("--loop", action="store_true", help="keep checking every monitor.interval_sec until the close")
+    m.add_argument("--dry-run", action="store_true", help="check and log, but place no orders")
+    g = sub.add_parser("guard", help="alias for one `monitor` check (kept for old cron lines)")
     g.add_argument("--live", action="store_true")
+
+    cmp_ = sub.add_parser("compare", help="walk-forward backtest of several configs side by side vs SPY")
+    cmp_.add_argument("configs", nargs="*", default=["configs/default.yaml", "configs/wide.yaml"])
+    cmp_.add_argument("--sensitivity", action="store_true", help="also run top_n 3/5/8 on the wide config")
 
     sub.add_parser("preview", help="offline: today's signals for a fresh $77 account (no keys)")
     c = sub.add_parser("check", help="verify Alpaca keys and show the account (places no orders)")
@@ -56,6 +64,15 @@ def main(argv: list[str] | None = None) -> int:
         from .execution.live import run_daily
 
         return run_daily(cfg, live=args.live, dry_run=args.dry_run, force=args.force)
+    if args.cmd == "monitor":
+        from .execution.monitor import run_monitor
+
+        return run_monitor(cfg, live=args.live, loop=args.loop, dry_run=args.dry_run)
+    if args.cmd == "compare":
+        from .backtest.compare import run_compare
+
+        run_compare(args.configs, sensitivity=args.sensitivity)
+        return 0
     if args.cmd == "guard":
         from .execution.live import guard_check
 

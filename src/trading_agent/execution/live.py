@@ -24,7 +24,7 @@ from ..config import load_secrets, resolve
 from ..data.loader import PriceData, check_freshness, load_prices, load_prices_alpaca
 from ..forecasting.ensemble import latest_forecasts
 from ..risk.engine import RiskEngine
-from ..strategy import ewma_vol, long_signals, trend_ok
+from ..strategy import ewma_vol, recent_returns, select_portfolio, trend_ok
 from .guarded import GuardedBroker
 from .ledger import Ledger
 from .orders import plan_orders
@@ -49,7 +49,7 @@ def resolve_mode(cfg, live_flag: bool) -> str:
 def make_risk(cfg) -> RiskEngine:
     state_dir = resolve(cfg["execution"]["state_dir"])
     return RiskEngine(cfg["risk"], cfg["universe"], state_dir / "risk_state.json",
-                      resolve(cfg["risk"]["kill_file"]))
+                      resolve(cfg["risk"]["kill_file"]), sectors=cfg.get("sectors"))
 
 
 def fetch_prices(cfg, key, secret) -> PriceData:
@@ -71,10 +71,15 @@ def compute_plan(cfg, prices: PriceData, snap, risk: RiskEngine, prev_longs: dic
     if not prev_longs:
         prev_longs = {s: snap.positions.get(s, 0) > 0 for s in universe}
     trend = trend_ok(prices.close).iloc[-1].to_dict()
-    longs = long_signals(fc, prev_longs, cfg["signal"], trend)
     vols = ewma_vol(prices.close).iloc[-1].to_dict()
+    pcfg = cfg.get("portfolio") or {}
+    rets = recent_returns(prices.close[universe], prices.close.index[-1],
+                          int(pcfg.get("corr_window", 120) or 120))
+    longs = select_portfolio(fc, prev_longs, cfg["signal"], pcfg, trend, vols, rets)
+    picks = [s for s, v in longs.items() if v]
+    cov = rets[picks].cov(min_periods=20) * 252 if picks else None
     scale = rl_scale(cfg, prices, fc, longs, snap, equity_hist)
-    decision = risk.size_targets(longs, vols, snap, today, scale)
+    decision = risk.size_targets(longs, vols, snap, today, scale, cov=cov)
     orders = plan_orders(decision.targets, snap, cfg["risk"]["rebalance_band"],
                          cfg["risk"]["min_trade_notional"], 0.0, liquidate=decision.liquidate)
     return fc, longs, decision, orders
@@ -102,6 +107,17 @@ def rl_scale(cfg, prices, fc, longs, snap, equity_hist) -> float:
 
 def run_daily(cfg, live: bool = False, dry_run: bool = False, force: bool = False) -> int:
     """Returns a process exit code: 0 = ok / nothing to do, 1 = failed safely (no new trades)."""
+    from .lock import state_lock
+
+    try:
+        with state_lock(resolve(cfg["execution"]["state_dir"])):
+            return _run_daily(cfg, live, dry_run, force)
+    except TimeoutError as exc:
+        log.error("RUN SKIPPED (no orders): %s", exc)
+        return 1
+
+
+def _run_daily(cfg, live: bool, dry_run: bool, force: bool) -> int:
     from .alpaca_broker import AlpacaBroker
 
     mode = resolve_mode(cfg, live)
@@ -221,30 +237,10 @@ def _log_plan(fc, longs, decision, orders):
 
 
 def guard_check(cfg, live: bool = False) -> int:
-    """Cheap intraday safety check: hard floor / kill file only (no forecasting)."""
-    from .alpaca_broker import AlpacaBroker
+    """Backward-compatible alias: one intraday monitor check (floor, drawdown, daily loss)."""
+    from .monitor import run_monitor
 
-    mode = resolve_mode(cfg, live)
-    key, secret = load_secrets()
-    ledger = Ledger(resolve(cfg["execution"]["state_dir"]))
-    try:
-        broker = AlpacaBroker(key, secret, paper=(mode == "paper"))
-        if not broker.clock().is_open:
-            log.info("Market closed; guard has nothing to do.")
-            return 0
-        risk = make_risk(cfg)
-        guard = GuardedBroker(broker, risk)
-        snap = guard.snapshot()
-        if risk.is_halted() or risk.check_floor(snap):
-            if snap.positions:
-                return _liquidate(cfg, guard, risk, ledger, broker.session, mode, snap, False)
-            log.info("Halted and already flat.")
-        else:
-            log.info("Guard OK: equity $%.2f > floor $%.2f", snap.equity, cfg["risk"]["hard_floor"])
-        return 0
-    except Exception as exc:  # noqa: BLE001
-        log.error("Guard check failed: %s", exc)
-        return 1
+    return run_monitor(cfg, live=live, loop=False)
 
 
 def preview_offline(cfg) -> int:
@@ -254,7 +250,7 @@ def preview_offline(cfg) -> int:
     prices = load_prices(cfg["universe"], cfg["data"]["start"], resolve(cfg["data"]["cache_dir"]))
     cap = cfg["risk"]["initial_capital"]
     snap = PortfolioSnapshot(cap, cap, {}, cap)
-    risk = RiskEngine(cfg["risk"], cfg["universe"])      # in-memory, touches no live state
+    risk = RiskEngine(cfg["risk"], cfg["universe"], sectors=cfg.get("sectors"))  # in-memory only
     fc, longs, decision, orders = compute_plan(cfg, prices, snap, risk, {}, datetime.now(NY).date())
     log.info("Preview using data through %s (offline, no broker):", prices.close.index[-1].date())
     _log_plan(fc, longs, decision, orders)
