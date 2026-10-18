@@ -14,7 +14,7 @@ stable-baselines3>=2.3
 gymnasium>=0.29
 torch>=2.2
 # Optional: dashboard
-streamlit>=1.35
+streamlit>=1.45
 plotly>=5.20
 # Dev
 pytest>=8.0

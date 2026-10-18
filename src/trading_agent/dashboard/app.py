@@ -34,7 +34,7 @@ def line(curves: dict[str, pd.Series], floor: float | None = None, log: bool = F
         fig.add_hline(y=floor, line_dash="dash", line_color="red", annotation_text="hard floor")
     fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10),
                       yaxis_type="log" if log else "linear", legend=dict(orientation="h"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def fmt_metrics(m: dict) -> pd.DataFrame:
@@ -55,20 +55,20 @@ if view == "Backtest":
         st.stop()
     m = json.loads(mpath.read_text())
     st.subheader("Full out-of-sample period")
-    st.dataframe(fmt_metrics(m["full"]), use_container_width=True)
+    st.dataframe(fmt_metrics(m["full"]), width="stretch")
     eq = pd.read_csv(results / "equity_base.csv", index_col=0, parse_dates=True).iloc[:, 0]
     spy = pd.read_csv(results / "equity_spy.csv", index_col=0, parse_dates=True).iloc[:, 0]
     line({"Agent (no RL)": eq, "Buy & hold SPY": spy}, r["hard_floor"], log=True)
     if "rl_test" in m:
         st.subheader("RL held-out test period")
-        st.dataframe(fmt_metrics(m["rl_test"]), use_container_width=True)
+        st.dataframe(fmt_metrics(m["rl_test"]), width="stretch")
         a = pd.read_csv(results / "equity_base_test.csv", index_col=0, parse_dates=True).iloc[:, 0]
         b = pd.read_csv(results / "equity_rl_test.csv", index_col=0, parse_dates=True).iloc[:, 0]
         line({"Agent (no RL)": a, "Agent + RL": b}, r["hard_floor"])
     tpath = results / "trades_base.csv"
     if tpath.exists():
         st.subheader("Backtest orders (most recent first)")
-        st.dataframe(pd.read_csv(tpath).iloc[::-1].head(200), use_container_width=True)
+        st.dataframe(pd.read_csv(tpath).iloc[::-1].head(200), width="stretch")
 else:
     led = Ledger(state_dir)
     mode = st.sidebar.selectbox("Account", ["paper", "live"])
@@ -93,10 +93,10 @@ else:
         line({"Equity": s}, r["hard_floor"])
     st.subheader("Latest signals")
     sig = led.table("signals", mode)
-    st.dataframe(sig[sig["session"] == sig["session"].max()] if not sig.empty else sig, use_container_width=True)
+    st.dataframe(sig[sig["session"] == sig["session"].max()] if not sig.empty else sig, width="stretch")
     st.subheader("Orders")
-    st.dataframe(led.table("orders", mode).iloc[::-1], use_container_width=True)
+    st.dataframe(led.table("orders", mode).iloc[::-1], width="stretch")
     st.subheader("Runs")
-    st.dataframe(led.table("runs", mode).iloc[::-1], use_container_width=True)
+    st.dataframe(led.table("runs", mode).iloc[::-1], width="stretch")
     with st.expander("Risk engine state"):
         st.json(risk_state)

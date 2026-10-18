@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rl = ["stable-baselines3>=2.3", "gymnasium>=0.29", "torch>=2.2"]
-dashboard = ["streamlit>=1.35", "plotly>=5.20"]
+dashboard = ["streamlit>=1.45", "plotly>=5.20"]
 dev = ["pytest>=8.0"]
 all = ["trading-agent[rl,dashboard,dev]"]
 

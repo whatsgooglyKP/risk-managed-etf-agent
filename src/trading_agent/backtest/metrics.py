@@ -52,6 +52,7 @@ def compute_metrics(equity: pd.Series, trades: pd.DataFrame | None = None,
         "exposure": float(exposure.mean()) if exposure is not None else 1.0,
         "n_trades": int(len(trades)) if trades is not None else 1,
         "floor_triggers": int(floor_triggers),
+        "min_equity": round(float(equity.min()), 2),
     }
 
 
@@ -62,6 +63,7 @@ def format_table(rows: dict[str, dict]) -> str:
             ("sortino", "Sortino", "{:.2f}"), ("max_drawdown", "Max drawdown", "{:.1%}"),
             ("win_rate", "Win rate (closed trades)", "{:.1%}"), ("exposure", "Avg. exposure", "{:.0%}"),
             ("n_trades", "# orders", "{:d}"), ("floor_triggers", "Floor triggers", "{:d}"),
+            ("min_equity", "Lowest equity ($; floor is $60)", "{:.2f}"),
             ("end_equity", "Ending equity ($)", "{:.2f}")]
     names = list(rows)
     out = ["| Metric | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
