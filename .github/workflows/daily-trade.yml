@@ -1,0 +1,73 @@
+# Free scheduled trading run on GitHub Actions (private repos get 2,000 free minutes/month;
+# one run takes ~2-3 minutes, so ~60-70 minutes/month).
+#
+# Setup: repo Settings -> Secrets and variables -> Actions -> New repository secret:
+#   ALPACA_API_KEY, ALPACA_SECRET_KEY   (paper keys first!)
+# Optional repository VARIABLE (not secret): TRADING_LIVE = "true" to trade real money
+#   (configs/default.yaml must ALSO say execution.mode: live).
+#
+# Two cron entries cover US daylight-saving changes (GitHub cron is UTC): the script itself
+# checks the market clock and is idempotent, so the extra run simply exits "already done".
+name: Daily trade
+
+on:
+  schedule:
+    - cron: "50 13 * * 1-5"   # 09:50 ET during daylight time (EDT)
+    - cron: "50 14 * * 1-5"   # 09:50 ET during standard time (EST)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only, place no orders"
+        type: boolean
+        default: true
+
+concurrency:
+  group: daily-trade
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+
+      # Persist state/ (ledger, risk state, kill file) between runs.
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: trading-state-${{ github.run_id }}
+          restore-keys: trading-state-
+
+      - name: Run daily agent
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ vars.TRADING_LIVE }}" = "true" ]; then ARGS="$ARGS --live"; fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          trading-agent daily $ARGS
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: trading-state-${{ github.run_id }}
+
+      - name: Upload logs and ledger CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ github.run_id }}
+          path: |
+            logs/
+            state/*.csv
+          retention-days: 90
