@@ -46,3 +46,34 @@ def test_crash_never_breaches_floor_by_much_and_halts(cfg):
     after = res.equity.loc[pd.Timestamp(res.halted_on) + pd.Timedelta(days=3):]
     assert (res.exposure.loc[after.index] == 0).all()          # flat forever after the halt
     assert after.nunique() == 1                                  # equity frozen in cash
+
+
+def test_wide_universe_holds_at_most_top_n_and_respects_caps(cfg):
+    syms = [f"S{i:02d}" for i in range(12)]
+    rng = np.random.default_rng(7)
+    idx = pd.bdate_range("2018-01-01", periods=300)
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0.0004, 0.012, (300, 12)), axis=0)),
+                         index=idx, columns=syms)
+    close.iloc[:150, 11] = np.nan                       # S11 lists half-way through
+    opn = close.shift(1).fillna(close)
+    rows = [{"date": d, "symbol": s, "p_up": 0.55 + 0.1 * rng.random(), "mu": 0.001, "agreement": 3,
+             "confidence": 0.3} for d in idx for s in syms if not np.isnan(close.loc[d, s])]
+    fc = pd.DataFrame(rows).set_index(["date", "symbol"])
+    cfg["universe"] = syms
+    cfg["benchmark"] = "S00"
+    cfg["sectors"] = {s: ("g1" if i < 6 else "g2") for i, s in enumerate(syms)}
+    cfg["signal"]["trend_filter"] = False
+    cfg["portfolio"].update({"top_n": 3, "hold_buffer": 1, "max_corr": 0.95})
+    cfg["risk"].update({"max_position": 0.30, "max_sector": 0.40, "max_open_positions": 4,
+                        "portfolio_vol_cap": 0.12})
+    bt = Backtester(PriceData(opn, close), fc, cfg, "2018-03-01")
+    res = bt.run()
+    assert len(res.equity) > 150 and res.equity.notna().all()
+    t = res.trades.copy()
+    t["signed"] = np.where(t["side"] == "buy", t["qty"], -t["qty"])
+    qty = t.pivot_table(index="date", columns="symbol", values="signed", aggfunc="sum").cumsum()
+    assert ((qty > 1e-9).sum(axis=1) <= 4).all()
+    s11 = res.trades[res.trades.symbol == "S11"]
+    assert s11.empty or s11["date"].min() > idx[150]   # never traded before it existed
+    for d, mult, dd, gross in res.decisions:
+        assert gross <= 0.98 + 1e-9

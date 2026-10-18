@@ -1,0 +1,96 @@
+# ---------------------------------------------------------------------------
+# Wide universe: ~50 liquid ETFs and large-cap stocks, ranked daily, top N held.
+# Layered on top of configs/default.yaml:  trading-agent --config configs/wide.yaml ...
+#
+# Survivorship bias (read docs/METHODOLOGY.md): the ETFs all launched before 2007 and are
+# chosen by asset class, not by later performance. The stocks are the largest US companies
+# by market cap at the END OF 2007 (the backtest start), including later disappointments
+# (C, AIG, GE, INTC, BAC, PFE, T). Companies from that list that were later delisted or
+# acquired cannot be downloaded for free and are missing, so some bias remains.
+# ---------------------------------------------------------------------------
+
+name: "Wide-50, top 5 (v2)"
+universe: [
+  # US equity index ETFs
+  SPY, QQQ, IWM, MDY,
+  # International equity
+  EFA, EEM, EWJ, EWZ, FXI,
+  # Bonds
+  TLT, IEF, TIP, LQD, AGG,
+  # Metals
+  GLD, SLV,
+  # US sectors (Select Sector SPDRs, 1998) + real estate
+  XLB, XLE, XLF, XLI, XLK, XLP, XLU, XLV, XLY, IYR,
+  # Large caps at end-2007 (point-in-time list, not today's winners)
+  AAPL, MSFT, GOOGL, CSCO, INTC, IBM, ORCL,
+  XOM, CVX,
+  JPM, BAC, C, WFC, AIG,
+  JNJ, PFE, MRK,
+  PG, KO, PEP, WMT,
+  GE, T, VZ,
+]
+
+sectors:
+  SPY: us_broad
+  QQQ: us_broad
+  IWM: us_broad
+  MDY: us_broad
+  EFA: international
+  EEM: international
+  EWJ: international
+  EWZ: international
+  FXI: international
+  TLT: treasuries
+  IEF: treasuries
+  TIP: treasuries
+  LQD: credit
+  AGG: credit
+  GLD: metals
+  SLV: metals
+  XLK: technology
+  AAPL: technology
+  MSFT: technology
+  GOOGL: technology
+  CSCO: technology
+  INTC: technology
+  IBM: technology
+  ORCL: technology
+  XLE: energy
+  XOM: energy
+  CVX: energy
+  XLF: financials
+  JPM: financials
+  BAC: financials
+  C: financials
+  WFC: financials
+  AIG: financials
+  XLV: health
+  JNJ: health
+  PFE: health
+  MRK: health
+  XLP: staples
+  PG: staples
+  KO: staples
+  PEP: staples
+  WMT: staples
+  XLI: industrials
+  XLB: industrials
+  GE: industrials
+  XLU: utilities
+  XLY: discretionary
+  T: telecom
+  VZ: telecom
+  IYR: real_estate
+
+portfolio:
+  top_n: 5                   # hold at most the 5 strongest forecasts
+  rank_by: p_up
+  hold_buffer: 2
+  max_corr: 0.85             # don't hold two near-duplicates (e.g. SPY and MDY)
+  corr_window: 120
+
+risk:
+  max_position: 0.25         # smaller per-name cap than the 5-ETF version (single stocks)
+  max_sector: 0.40           # e.g. tech ETF + tech stocks together <= 40%
+  max_open_positions: 6      # hard ceiling (top_n + 1 for a holding being phased out)
+  portfolio_vol_cap: 0.10    # same 10% risk budget as the 5-ETF version, measured on the portfolio

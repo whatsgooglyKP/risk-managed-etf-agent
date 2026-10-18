@@ -68,6 +68,35 @@ def validate_config(cfg: dict) -> None:
         raise ValueError("risk.max_position must be in (0, 1]")
     if cfg["rl"]["max_scale"] > 1.0:
         raise ValueError("rl.max_scale must be <= 1.0: RL can only reduce risk-approved size")
+    uni = [s.upper() for s in cfg["universe"]]
+    if len(set(uni)) != len(uni):
+        raise ValueError("universe contains duplicate symbols")
+    if cfg["benchmark"].upper() not in uni:
+        raise ValueError("benchmark must be part of the universe (it drives market features)")
+    unknown = [s for s in (cfg.get("sectors") or {}) if s.upper() not in uni]
+    if unknown:
+        raise ValueError(f"sectors lists symbols that are not in the universe: {unknown}")
+    pf = cfg.get("portfolio") or {}
+    top_n = pf.get("top_n")
+    if top_n is not None and (not isinstance(top_n, int) or top_n < 1):
+        raise ValueError("portfolio.top_n must be a positive integer or null")
+    if pf.get("rank_by", "p_up") not in ("p_up", "confidence", "mu_over_vol"):
+        raise ValueError("portfolio.rank_by must be p_up, confidence or mu_over_vol")
+    mc = pf.get("max_corr")
+    if mc is not None and not 0 < mc <= 1:
+        raise ValueError("portfolio.max_corr must be in (0, 1] or null")
+    for k in ("max_sector", "portfolio_vol_cap"):
+        v = r.get(k)
+        if v is not None and v <= 0:
+            raise ValueError(f"risk.{k} must be positive or null")
+    mop = r.get("max_open_positions")
+    if mop is not None and (not isinstance(mop, int) or mop < 1):
+        raise ValueError("risk.max_open_positions must be a positive integer or null")
+    mon = cfg.get("monitor") or {}
+    if mon.get("on_daily_loss", "block_buys") not in ("block_buys", "flatten"):
+        raise ValueError("monitor.on_daily_loss must be block_buys or flatten")
+    if mon.get("on_drawdown", "flatten") not in ("flatten", "none"):
+        raise ValueError("monitor.on_drawdown must be flatten or none")
 
 
 def resolve(path: str | os.PathLike) -> Path:

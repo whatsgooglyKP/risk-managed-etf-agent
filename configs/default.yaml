@@ -3,8 +3,18 @@
 # Secrets (API keys) never go here: they live in .env (see .env.example).
 # ---------------------------------------------------------------------------
 
+name: "5-ETF (v1)"                     # label used in reports
 universe: [SPY, QQQ, TLT, GLD, IWM]   # liquid, unleveraged ETFs only
-benchmark: SPY
+benchmark: SPY                        # must be in the universe (used for market features)
+sectors: {}                           # symbol -> group, used by risk.max_sector (see configs/wide.yaml)
+
+portfolio:
+  top_n: null                # null = hold every symbol whose signal is on (original 5-ETF design);
+                             # an integer = rank by forecast and hold only the best N
+  rank_by: p_up              # p_up | confidence | mu_over_vol
+  hold_buffer: 2             # keep a holding while it ranks within top_n + hold_buffer (less churn)
+  max_corr: null             # skip a candidate whose return correlation with a pick exceeds this
+  corr_window: 120           # trading days used for correlations / covariance
 
 data:
   start: "2005-01-01"        # history used for training / backtests
@@ -19,6 +29,9 @@ forecasting:
   arima_orders: [[1, 0, 0], [0, 0, 1], [1, 0, 1]]   # chosen per refit by AIC
   weights: {ets: 0.25, arima: 0.25, ml: 0.50}        # ensemble weights
   ml_horizon: 5              # ML model target: forward 5-day return (smoother than 1-day)
+  min_history: 252           # a symbol gets forecasts only after this many daily bars
+  n_jobs: 6                  # parallel worker processes for ETS/ARIMA (one symbol per job)
+  cache_dir: results/fc_cache  # per-symbol walk-forward ETS/ARIMA cache (re-used across configs)
 
 signal:
   enter_prob: 0.55           # go long when ensemble P(up) >= this ...
@@ -32,6 +45,9 @@ risk:
   kill_file: state/HALT      # presence of this file = halted; delete manually only after review
   target_vol: 0.10           # annualised volatility budget per position (vol-based sizing)
   max_position: 0.35         # max fraction of equity in any one symbol
+  max_sector: null           # max fraction of equity in one `sectors` group (null = off)
+  max_open_positions: null   # hard cap on the number of symbols held (null = off)
+  portfolio_vol_cap: null    # scale all weights so ex-ante portfolio vol <= this (null = off)
   max_gross_exposure: 1.0    # cash account: never more than 100% invested
   cash_buffer: 0.02          # keep 2% in cash for slippage / rounding
   max_drawdown_soft: 0.08    # drawdown from peak beyond this -> halve exposure
@@ -71,3 +87,9 @@ execution:
   max_retries: 4             # API retries with exponential backoff
   min_minutes_after_open: 10 # wait for the opening auction to settle before trading
   log_dir: logs
+
+monitor:                     # intraday risk monitor (`trading-agent monitor`), no forecasting
+  interval_sec: 60           # local --loop mode: seconds between checks
+  max_price_age_sec: 900     # ignore Alpaca quotes older than this (falls back to broker marks)
+  on_daily_loss: block_buys  # block_buys | flatten   (when equity is down >= daily_loss_cap today)
+  on_drawdown: flatten       # flatten | none         (when drawdown >= max_drawdown_hard)

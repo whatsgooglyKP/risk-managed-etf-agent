@@ -14,6 +14,9 @@ Rules (all configurable in configs/default.yaml -> risk):
   * Drawdown control: dd >= soft -> half size; dd >= hard -> flat for cooldown_days.
   * Daily loss cap: equity down >= cap vs last close -> no new buying today.
   * PDT guard: under $25k, at most N day trades per rolling 5 business days.
+  * Wide-universe limits (optional): max weight per sector group (`max_sector`), max number
+    of symbols held (`max_open_positions`) and an ex-ante portfolio volatility cap
+    (`portfolio_vol_cap`, using the recent covariance of the chosen symbols).
 """
 from __future__ import annotations
 
@@ -60,6 +63,7 @@ class Order:
     notional: float           # dollar amount (always positive)
     close_position: bool = False
     reason: str = ""
+    tag: str = ""             # distinguishes intraday-monitor orders from the daily run's (order ids)
 
 
 @dataclass
@@ -82,13 +86,15 @@ class RiskState:
     fills: list[list] = field(default_factory=list)       # [iso_date, symbol, side]
     day_trades: list[list] = field(default_factory=list)  # [iso_date, symbol]
     floor_triggers: int = 0
+    buys_blocked_on: str | None = None              # ISO date: intraday monitor blocked buys for that day
 
 
 class RiskEngine:
     def __init__(self, rcfg, universe: list[str], state_path: str | Path | None = None,
-                 kill_file: str | Path | None = None):
+                 kill_file: str | Path | None = None, sectors: dict[str, str] | None = None):
         self.cfg = dict(rcfg)
         self.universe = [s.upper() for s in universe]
+        self.sectors = {k.upper(): v for k, v in (sectors or {}).items()}
         self.state_path = Path(state_path) if state_path else None
         self.kill_file = Path(kill_file) if kill_file else None
         self.state = self._load_state()
@@ -165,9 +171,59 @@ class RiskEngine:
         self.state.day_trades = [d for d in self.state.day_trades if d[0] in keep]
 
     # ------------------------------------------------------------------ sizing
+    def sector_of(self, symbol: str) -> str:
+        return self.sectors.get(symbol.upper(), symbol.upper())   # ungrouped = its own group
+
+    def sector_weight(self, snap: PortfolioSnapshot, sector: str) -> float:
+        return sum(v for s, v in snap.positions.items() if self.sector_of(s) == sector) / max(snap.equity, EPS)
+
+    def apply_sector_cap(self, targets: dict[str, float], reasons: list[str]) -> dict[str, float]:
+        cap = self.cfg.get("max_sector")
+        if not cap or not self.sectors:
+            return targets
+        out = dict(targets)
+        groups: dict[str, list[str]] = {}
+        for sym, w in out.items():
+            if w > 0:
+                groups.setdefault(self.sector_of(sym), []).append(sym)
+        for g, syms in groups.items():
+            tot = sum(out[s] for s in syms)
+            if tot > cap + EPS:
+                for s in syms:
+                    out[s] *= cap / tot
+                reasons.append(f"sector {g} {tot:.0%} scaled to cap {cap:.0%}")
+        return out
+
+    def apply_portfolio_vol_cap(self, targets: dict[str, float], cov: pd.DataFrame | None,
+                                reasons: list[str]) -> dict[str, float]:
+        """Scale all weights down (never up) so ex-ante annualised portfolio vol <= cap."""
+        cap = self.cfg.get("portfolio_vol_cap")
+        held = [s for s, w in targets.items() if w > 0]
+        if not cap or not held:
+            return targets
+        if cov is None or not set(held) <= set(cov.columns):
+            return targets
+        c = cov.loc[held, held].to_numpy(dtype=float)
+        if not np.isfinite(c).all():
+            # unknown covariance for a new listing: assume perfect correlation (conservative)
+            sd = np.sqrt(np.nan_to_num(np.diag(c), nan=0.0))
+            c = np.outer(sd, sd)
+        w = np.array([targets[s] for s in held])
+        vol = float(np.sqrt(max(w @ c @ w, 0.0)))
+        if vol > cap:
+            k = cap / vol
+            reasons.append(f"ex-ante portfolio vol {vol:.1%} scaled to cap {cap:.0%}")
+            return {s: (wt * k if wt > 0 else 0.0) for s, wt in targets.items()}
+        return targets
+
     def size_targets(self, longs: dict[str, bool], vols: dict[str, float],
-                     snap: PortfolioSnapshot, today: date, rl_scale: float = 1.0) -> RiskDecision:
-        """Convert long/flat signals into risk-approved target weights."""
+                     snap: PortfolioSnapshot, today: date, rl_scale: float = 1.0,
+                     cov: pd.DataFrame | None = None) -> RiskDecision:
+        """Convert long/flat signals into risk-approved target weights.
+
+        `cov` (optional) is the annualised covariance of recent returns, used only for the
+        portfolio volatility cap.
+        """
         reasons: list[str] = []
         if self.is_halted() or self.check_floor(snap):
             return RiskDecision({s: 0.0 for s in self.universe}, halted=True, liquidate=True,
@@ -210,6 +266,18 @@ class RiskEngine:
                 continue
             targets[sym] = min(self.cfg["max_position"], self.cfg["target_vol"] / vol) * mult * scale
 
+        mop = self.cfg.get("max_open_positions")
+        live_syms = [s for s, w in targets.items() if w > 0]
+        if mop and len(live_syms) > mop:
+            # keep current holdings first, then the largest targets
+            order = sorted(live_syms, key=lambda s: (snap.positions.get(s, 0) <= 0, -targets[s]))
+            for s in order[mop:]:
+                targets[s] = 0.0
+            reasons.append(f"max {mop} open positions: dropped {order[mop:]}")
+
+        targets = self.apply_sector_cap(targets, reasons)
+        targets = self.apply_portfolio_vol_cap(targets, cov, reasons)
+
         cap = self.cfg["max_gross_exposure"] - self.cfg["cash_buffer"]
         gross = sum(targets.values())
         if gross > cap:
@@ -221,10 +289,31 @@ class RiskEngine:
             buys_blocked = True
             targets = {s: min(w, snap.weight(s)) for s, w in targets.items()}
             reasons.append("daily loss cap hit: no new buying today")
+        elif self.buys_blocked_today(today):
+            buys_blocked = True
+            targets = {s: min(w, snap.weight(s)) for s, w in targets.items()}
+            reasons.append("intraday monitor blocked buying for today")
 
         self.save()
         return RiskDecision(targets, exposure_mult=mult * scale, drawdown=dd,
                             buys_blocked=buys_blocked, reasons=reasons)
+
+    def block_buys_today(self, today: date, reason: str) -> None:
+        if self.state.buys_blocked_on != today.isoformat():
+            log.warning("Buying blocked for %s: %s", today, reason)
+        self.state.buys_blocked_on = today.isoformat()
+        self.save()
+
+    def buys_blocked_today(self, today: date) -> bool:
+        return self.state.buys_blocked_on == today.isoformat()
+
+    def start_cooldown(self, today: date, reason: str) -> None:
+        """Same rule as the daily drawdown brake: flat for cooldown_days, then half size."""
+        end = pd.Timestamp(today) + pd.offsets.BDay(int(self.cfg["cooldown_days"]))
+        if not self.state.cooldown_until or self.state.cooldown_until < end.date().isoformat():
+            self.state.cooldown_until = end.date().isoformat()
+        log.warning("Drawdown cooldown until %s: %s", self.state.cooldown_until, reason)
+        self.save()
 
     # ------------------------------------------------------------------ per-order gate
     def validate_order(self, order: Order, snap: PortfolioSnapshot, today: date,
@@ -265,8 +354,22 @@ class RiskEngine:
             raise RiskViolation(f"{sym}: ${order.notional:.2f} exceeds cash ${snap.cash:.2f} (cash only)")
         if snap.last_equity and snap.equity / snap.last_equity - 1 <= -self.cfg["daily_loss_cap"]:
             raise RiskViolation("daily loss cap hit: no new buying today")
+        if self.buys_blocked_today(today):
+            raise RiskViolation("intraday monitor blocked buying for today")
+        if self.state.cooldown_until and today.isoformat() < self.state.cooldown_until:
+            raise RiskViolation(f"drawdown cooldown until {self.state.cooldown_until}: no buying")
         tol = 0.01
         if (held + order.notional) / snap.equity > self.cfg["max_position"] + tol:
             raise RiskViolation(f"{sym}: would exceed max position {self.cfg['max_position']:.0%}")
         if (snap.gross + order.notional) / snap.equity > self.cfg["max_gross_exposure"] + tol:
             raise RiskViolation("would exceed max gross exposure (no margin)")
+        sec_cap = self.cfg.get("max_sector")
+        if sec_cap and self.sectors:
+            g = self.sector_of(sym)
+            if self.sector_weight(snap, g) + order.notional / snap.equity > sec_cap + tol:
+                raise RiskViolation(f"{sym}: would exceed sector cap {sec_cap:.0%} for {g}")
+        mop = self.cfg.get("max_open_positions")
+        if mop and held <= 0:
+            n_held = sum(1 for v in snap.positions.values() if v > 0)
+            if n_held >= mop:
+                raise RiskViolation(f"{sym}: already holding {n_held} symbols (max {mop})")

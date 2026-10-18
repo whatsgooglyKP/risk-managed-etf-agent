@@ -18,7 +18,7 @@ from ..execution.guarded import GuardedBroker
 from ..execution.orders import plan_orders
 from ..execution.sim import SimBroker
 from ..risk.engine import RiskDecision, RiskEngine
-from ..strategy import ewma_vol, long_signals, trend_ok
+from ..strategy import ewma_vol, select_portfolio, trend_ok
 
 
 @dataclass
@@ -45,6 +45,13 @@ class Backtester:
                            for d, g in forecasts.groupby(level="date")}
         self.vol = ewma_vol(prices.close)
         self.trend = trend_ok(prices.close)
+        self.logret = np.log(prices.close).diff()
+        self.pos_of = {d: i for i, d in enumerate(prices.close.index)}
+        pcfg = cfg.get("portfolio") or {}
+        self.pcfg = pcfg
+        self.corr_window = int(pcfg.get("corr_window", 120) or 120)
+        self.need_returns = (pcfg.get("top_n") is not None and pcfg.get("max_corr") is not None) \
+            or bool(cfg["risk"].get("portfolio_vol_cap"))
         c = cfg["costs"]
         self.cost_bps = c["slippage_bps"] + c["spread_bps"] / 2
         self.reset()
@@ -53,7 +60,7 @@ class Backtester:
     def reset(self):
         r = self.cfg["risk"]
         self.broker = SimBroker(r["initial_capital"], self.cost_bps, self.cfg["costs"]["commission_per_order"])
-        self.risk = RiskEngine(r, self.universe)          # in-memory state, no kill file
+        self.risk = RiskEngine(r, self.universe, sectors=self.cfg.get("sectors"))  # in-memory, no kill file
         self.guard = GuardedBroker(self.broker, self.risk)
         self.k = 0
         self.pending: RiskDecision | None = None
@@ -94,10 +101,18 @@ class Backtester:
         d = self.dates[self.k]
         fc = self.fc_by_date[d]
         trend = self.trend.loc[d].to_dict()
-        self.sig_long = long_signals(fc, self.sig_long, self.cfg["signal"], trend)
         vols = self.vol.loc[d].to_dict()
+        rets = cov = None
+        if self.need_returns:
+            i = self.pos_of[d]
+            rets = self.logret.iloc[max(1, i - self.corr_window + 1): i + 1]
+        self.sig_long = select_portfolio(fc, self.sig_long, self.cfg["signal"], self.pcfg, trend, vols, rets)
+        if rets is not None and self.cfg["risk"].get("portfolio_vol_cap"):
+            picks = [s for s, v in self.sig_long.items() if v]
+            if picks:
+                cov = rets[picks].cov(min_periods=20) * 252
         snap = self.broker.snapshot()
-        dec = self.risk.size_targets(self.sig_long, vols, snap, d.date(), rl_scale)
+        dec = self.risk.size_targets(self.sig_long, vols, snap, d.date(), rl_scale, cov=cov)
         if dec.halted and self.halted_on is None:
             self.halted_on = str(d.date())
         self.pending = dec
