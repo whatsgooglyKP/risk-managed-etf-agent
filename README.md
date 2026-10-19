@@ -1,6 +1,6 @@
 # Risk-managed ETF trading agent
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/whatsgooglyKP/risk-managed-etf-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/whatsgooglyKP/risk-managed-etf-agent/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Broker: Alpaca](https://img.shields.io/badge/broker-Alpaca%20(paper%20%7C%20live)-yellow)
